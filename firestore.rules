@@ -1,0 +1,72 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Fields: username, full_name, role (admin/manager), is_active
+    //
+    // Collection: cars
+    // Fields: plate_number, brand, model, year, color, daily_price, status, image_url, notes
+    //
+    // Collection: clients
+    // Fields: first_name, last_name, phone, passport_series, passport_number, address, created_at
+    //
+    // Collection: rentals
+    // Fields: car_id, client_id, manager_id, start_date, end_date, return_date, daily_price, total_amount, payment_status, payment_type, deposit_amount, status, notes
+    //
+    // Collection: payments
+    // Fields: rental_id, amount, payment_date, payment_type, notes
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+         (request.auth.token.email == "jamshidkh2004@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isManager() {
+      return isAuthenticated() && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'manager' || isAdmin());
+    }
+
+    // Users collection
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Cars collection
+    match /cars/{carId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Clients collection
+    match /clients/{clientId} {
+      allow read: if isAuthenticated();
+      allow write: if isManager();
+    }
+
+    // Rentals collection
+    match /rentals/{rentalId} {
+      allow read: if isAuthenticated();
+      allow write: if isManager();
+    }
+
+    // Payments collection
+    match /payments/{paymentId} {
+      allow read: if isAuthenticated();
+      allow write: if isManager();
+    }
+  }
+}

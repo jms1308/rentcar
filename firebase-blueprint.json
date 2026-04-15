@@ -1,0 +1,89 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "System users (admins and managers)",
+      "type": "object",
+      "properties": {
+        "username": { "type": "string" },
+        "full_name": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "manager"] },
+        "is_active": { "type": "boolean" }
+      },
+      "required": ["username", "full_name", "role", "is_active"]
+    },
+    "Car": {
+      "title": "Car",
+      "description": "Vehicles available for rent",
+      "type": "object",
+      "properties": {
+        "plate_number": { "type": "string" },
+        "brand": { "type": "string" },
+        "model": { "type": "string" },
+        "year": { "type": "number" },
+        "color": { "type": "string" },
+        "daily_price": { "type": "number" },
+        "status": { "type": "string", "enum": ["bor", "ijarada", "tamirda", "rezerv"] },
+        "image_url": { "type": "string" },
+        "notes": { "type": "string" }
+      },
+      "required": ["plate_number", "brand", "model", "year", "color", "daily_price", "status"]
+    },
+    "Client": {
+      "title": "Client",
+      "description": "Customers who rent cars",
+      "type": "object",
+      "properties": {
+        "first_name": { "type": "string" },
+        "last_name": { "type": "string" },
+        "phone": { "type": "string" },
+        "passport_series": { "type": "string" },
+        "passport_number": { "type": "string" },
+        "address": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["first_name", "last_name", "phone", "passport_series", "passport_number"]
+    },
+    "Rental": {
+      "title": "Rental",
+      "description": "Car rental transactions",
+      "type": "object",
+      "properties": {
+        "car_id": { "type": "string" },
+        "client_id": { "type": "string" },
+        "manager_id": { "type": "string" },
+        "start_date": { "type": "string", "format": "date" },
+        "end_date": { "type": "string", "format": "date" },
+        "return_date": { "type": "string", "format": "date" },
+        "daily_price": { "type": "number" },
+        "total_amount": { "type": "number" },
+        "payment_status": { "type": "string", "enum": ["tolanmagan", "qisman", "tolangan"] },
+        "payment_type": { "type": "string", "enum": ["naqd", "karta", "otkazma"] },
+        "deposit_amount": { "type": "number" },
+        "status": { "type": "string", "enum": ["aktiv", "yakunlangan", "bekor"] },
+        "notes": { "type": "string" }
+      },
+      "required": ["car_id", "client_id", "manager_id", "start_date", "end_date", "daily_price", "total_amount", "payment_status", "status"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "Payments made for rentals",
+      "type": "object",
+      "properties": {
+        "rental_id": { "type": "string" },
+        "amount": { "type": "number" },
+        "payment_date": { "type": "string", "format": "date-time" },
+        "payment_type": { "type": "string", "enum": ["naqd", "karta", "otkazma"] },
+        "notes": { "type": "string" }
+      },
+      "required": ["rental_id", "amount", "payment_date", "payment_type"]
+    }
+  },
+  "firestore": {
+    "users": { "schema": "User", "description": "System users" },
+    "cars": { "schema": "Car", "description": "Vehicles" },
+    "clients": { "schema": "Client", "description": "Customers" },
+    "rentals": { "schema": "Rental", "description": "Rentals" },
+    "payments": { "schema": "Payment", "description": "Payments" }
+  }
+}
