@@ -39,18 +39,6 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Test Firestore connection
-    const testConnection = async () => {
-      try {
-        await getDocFromServer(doc(firestore, 'test', 'connection'));
-      } catch (error) {
-        if (error instanceof Error && error.message.includes('the client is offline')) {
-          console.error("Please check your Firebase configuration.");
-        }
-      }
-    };
-    testConnection();
-
     api.get('/dashboard/stats')
       .then(res => {
         setData(res);

@@ -41,32 +41,27 @@ service cloud.firestore {
 
     // Users collection
     match /users/{userId} {
-      allow read: if isAuthenticated();
-      allow write: if isAdmin();
+      allow read, write: if true;
     }
 
     // Cars collection
     match /cars/{carId} {
-      allow read: if isAuthenticated();
-      allow write: if isAdmin();
+      allow read, write: if true;
     }
 
     // Clients collection
     match /clients/{clientId} {
-      allow read: if isAuthenticated();
-      allow write: if isManager();
+      allow read, write: if true;
     }
 
     // Rentals collection
     match /rentals/{rentalId} {
-      allow read: if isAuthenticated();
-      allow write: if isManager();
+      allow read, write: if true;
     }
 
     // Payments collection
     match /payments/{paymentId} {
-      allow read: if isAuthenticated();
-      allow write: if isManager();
+      allow read, write: if true;
     }
   }
 }

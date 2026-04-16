@@ -164,7 +164,7 @@ export default function Rentals() {
                   <label className="block text-sm font-medium text-gray-700 mb-1">Mashina tanlang</label>
                   <select 
                     required 
-                    onChange={(e) => setSelectedCar(cars.find((c: any) => c.id === parseInt(e.target.value)))}
+                    onChange={(e) => setSelectedCar(cars.find((c: any) => c.id === e.target.value))}
                     className="w-full px-4 py-2 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
                   >
                     <option value="">Tanlang...</option>
@@ -177,7 +177,7 @@ export default function Rentals() {
                   <label className="block text-sm font-medium text-gray-700 mb-1">Mijoz tanlang</label>
                   <select 
                     required 
-                    onChange={(e) => setSelectedClient(clients.find((c: any) => c.id === parseInt(e.target.value)))}
+                    onChange={(e) => setSelectedClient(clients.find((c: any) => c.id === e.target.value))}
                     className="w-full px-4 py-2 border border-gray-200 rounded-lg outline-none focus:ring-2 focus:ring-blue-500"
                   >
                     <option value="">Tanlang...</option>

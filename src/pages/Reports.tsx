@@ -1,12 +1,17 @@
 import React, { useState } from 'react';
 import { FileSpreadsheet, FileText, Calendar, TrendingUp, Key, UserCheck, Star } from 'lucide-react';
+import { api } from '../lib/api';
 
 export default function Reports() {
   const [startDate, setStartDate] = useState(new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0]);
   const [endDate, setEndDate] = useState(new Date().toISOString().split('T')[0]);
 
-  const handleExcelExport = () => {
-    window.open(`/api/reports/export/excel?start_date=${startDate}&end_date=${endDate}`, '_blank');
+  const handleExcelExport = async () => {
+    try {
+      await api.download(`/reports/export/excel?start_date=${startDate}&end_date=${endDate}`, `hisobot_${startDate}_${endDate}.xlsx`);
+    } catch (error: any) {
+      alert(error.message);
+    }
   };
 
   return (

@@ -87,5 +87,23 @@ export const api = {
       headers: { 'Authorization': `Bearer ${token}` }
     });
     return handleResponse(res);
+  },
+  download: async (endpoint: string, filename: string) => {
+    const token = localStorage.getItem('token');
+    const res = await fetch(`${API_URL}${endpoint}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    
+    if (!res.ok) return handleResponse(res);
+    
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
   }
 };

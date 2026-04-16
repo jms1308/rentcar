@@ -6,10 +6,31 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import multer from 'multer';
 import fs from 'fs';
-import db from './src/lib/db';
-import './src/lib/seed'; // Run seed script
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  getDoc, 
+  getDocs, 
+  addDoc, 
+  updateDoc, 
+  deleteDoc, 
+  query, 
+  where, 
+  limit, 
+  orderBy, 
+  writeBatch,
+  setDoc,
+  Timestamp
+} from 'firebase/firestore';
+import firebaseConfig from './firebase-applet-config.json';
 import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
+
+// Initialize Firebase Client SDK
+const firebaseApp = initializeApp(firebaseConfig);
+const firestore = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
 
 const app = express();
 const PORT = 3000;
@@ -51,282 +72,512 @@ const isAdmin = (req: any, res: any, next: any) => {
 
 // --- API ROUTES ---
 
+// Health Check
+app.get('/api/health', async (req, res) => {
+  try {
+    const snap = await getDocs(collection(firestore, 'users'));
+    res.json({ 
+      status: 'ok', 
+      database: firebaseConfig.firestoreDatabaseId,
+      usersCount: snap.size
+    });
+  } catch (error: any) {
+    res.status(500).json({ 
+      status: 'error', 
+      message: error.message,
+      code: error.code
+    });
+  }
+});
+
 // Auth
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
-  const user = db.prepare('SELECT * FROM users WHERE username = ? AND is_active = 1').get(username) as any;
   
-  if (!user || !(await bcrypt.compare(password, user.password))) {
-    return res.status(401).json({ message: 'Login yoki parol noto\'g\'ri' });
-  }
+  try {
+    const q = query(collection(firestore, 'users'), where('username', '==', username), where('is_active', '==', 1));
+    const snapshot = await getDocs(q);
+    
+    if (snapshot.empty) {
+      return res.status(401).json({ message: 'Login yoki parol noto\'g\'ri' });
+    }
 
-  const token = jwt.sign({ id: user.id, username: user.username, role: user.role, full_name: user.full_name }, JWT_SECRET);
-  res.json({ token, user: { id: user.id, username: user.username, role: user.role, full_name: user.full_name } });
+    const userDoc = snapshot.docs[0];
+    const user = { id: userDoc.id, ...userDoc.data() } as any;
+    
+    if (!(await bcrypt.compare(password, user.password))) {
+      return res.status(401).json({ message: 'Login yoki parol noto\'g\'ri' });
+    }
+
+    const token = jwt.sign({ id: user.id, username: user.username, role: user.role, full_name: user.full_name }, JWT_SECRET);
+    res.json({ token, user: { id: user.id, username: user.username, role: user.role, full_name: user.full_name } });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
 });
 
 // Dashboard Stats
-app.get('/api/dashboard/stats', authenticateToken, (req, res) => {
-  const today = new Date().toISOString().split('T')[0];
-  const firstDayOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0];
+app.get('/api/dashboard/stats', authenticateToken, async (req, res) => {
+  try {
+    const today = new Date().toISOString().split('T')[0];
+    const firstDayOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0];
 
-  const activeRentals = db.prepare("SELECT COUNT(*) as count FROM rentals WHERE status = 'aktiv'").get() as any;
-  const availableCars = db.prepare("SELECT COUNT(*) as count FROM cars WHERE status = 'bor'").get() as any;
-  
-  const monthlyRevenue = db.prepare('SELECT SUM(amount) as total FROM payments WHERE payment_date >= ?').get(firstDayOfMonth) as any;
-  
-  const overdueRentals = db.prepare("SELECT COUNT(*) as count FROM rentals WHERE status = 'aktiv' AND end_date < ?").get(today) as any;
+    const activeRentalsSnap = await getDocs(query(collection(firestore, 'rentals'), where('status', '==', 'aktiv')));
+    const availableCarsSnap = await getDocs(query(collection(firestore, 'cars'), where('status', '==', 'bor')));
+    
+    const monthlyPaymentsSnap = await getDocs(query(collection(firestore, 'payments'), where('payment_date', '>=', firstDayOfMonth)));
+    let monthlyRevenue = 0;
+    monthlyPaymentsSnap.forEach(doc => monthlyRevenue += doc.data().amount);
+    
+    const overdueRentalsSnap = await getDocs(query(collection(firestore, 'rentals'), where('status', '==', 'aktiv'), where('end_date', '<', today)));
 
-  // Chart data: Revenue last 30 days
-  const revenueHistory = db.prepare(`
-    SELECT date(payment_date) as date, SUM(amount) as total 
-    FROM payments 
-    WHERE payment_date >= date('now', '-30 days')
-    GROUP BY date(payment_date)
-    ORDER BY date
-  `).all();
+    // Chart data: Revenue last 30 days
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    const recentPaymentsSnap = await getDocs(query(collection(firestore, 'payments'), where('payment_date', '>=', thirtyDaysAgo)));
+    
+    const revenueMap: Record<string, number> = {};
+    recentPaymentsSnap.forEach(doc => {
+      const date = doc.data().payment_date.split('T')[0];
+      revenueMap[date] = (revenueMap[date] || 0) + doc.data().amount;
+    });
+    const revenueHistory = Object.entries(revenueMap).map(([date, total]) => ({ date, total })).sort((a, b) => a.date.localeCompare(b.date));
 
-  // Chart data: Car status
-  const carStatus = db.prepare('SELECT status, COUNT(*) as count FROM cars GROUP BY status').all();
+    // Chart data: Car status
+    const allCarsSnap = await getDocs(collection(firestore, 'cars'));
+    const statusMap: Record<string, number> = {};
+    allCarsSnap.forEach(doc => {
+      const status = doc.data().status;
+      statusMap[status] = (statusMap[status] || 0) + 1;
+    });
+    const carStatus = Object.entries(statusMap).map(([status, count]) => ({ status, count }));
 
-  // Recent active rentals
-  const recentRentals = db.prepare(`
-    SELECT r.*, c.plate_number, c.brand, c.model, cl.first_name, cl.last_name 
-    FROM rentals r
-    JOIN cars c ON r.car_id = c.id
-    JOIN clients cl ON r.client_id = cl.id
-    WHERE r.status = 'aktiv'
-    ORDER BY r.start_date DESC
-    LIMIT 5
-  `).all();
+    // Recent active rentals
+    const recentRentals: any[] = [];
+    console.log('Fetching recent rentals...');
+    const recentRentalsSnap = await getDocs(query(collection(firestore, 'rentals'), where('status', '==', 'aktiv'), limit(5)));
 
-  res.json({
-    stats: {
-      activeRentals: activeRentals.count,
-      availableCars: availableCars.count,
-      monthlyRevenue: monthlyRevenue.total || 0,
-      overdueRentals: overdueRentals.count
-    },
-    charts: {
-      revenueHistory,
-      carStatus
-    },
-    recentRentals
-  });
+    console.log(`Found ${recentRentalsSnap.size} recent rentals`);
+    for (const d of recentRentalsSnap.docs) {
+      const rental = { id: d.id, ...d.data() } as any;
+      
+      let carData: any = {};
+      let clientData: any = {};
+
+      try {
+        if (rental.car_id) {
+          const carDoc = await getDoc(doc(firestore, 'cars', String(rental.car_id)));
+          carData = carDoc.data() || {};
+        }
+        if (rental.client_id) {
+          const clientDoc = await getDoc(doc(firestore, 'clients', String(rental.client_id)));
+          clientData = clientDoc.data() || {};
+        }
+      } catch (e) {
+        console.error(`Error fetching related docs for rental ${d.id}:`, e);
+      }
+      
+      recentRentals.push({
+        ...rental,
+        plate_number: carData.plate_number || 'N/A',
+        brand: carData.brand || 'N/A',
+        model: carData.model || 'N/A',
+        first_name: clientData.first_name || 'N/A',
+        last_name: clientData.last_name || 'N/A'
+      });
+    }
+
+    // Sort in memory since we removed orderBy to avoid index requirement
+    recentRentals.sort((a, b) => (b.start_date || '').localeCompare(a.start_date || ''));
+
+    res.json({
+      stats: {
+        activeRentals: activeRentalsSnap.size,
+        availableCars: availableCarsSnap.size,
+        monthlyRevenue,
+        overdueRentals: overdueRentalsSnap.size
+      },
+      charts: {
+        revenueHistory,
+        carStatus
+      },
+      recentRentals
+    });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
 });
 
 // Cars
-app.get('/api/cars', authenticateToken, (req, res) => {
+app.get('/api/cars', authenticateToken, async (req, res) => {
   const { status, search } = req.query;
-  let query = 'SELECT * FROM cars WHERE 1=1';
-  const params: any[] = [];
+  try {
+    let q: any = collection(firestore, 'cars');
 
-  if (status && status !== 'hammasi') {
-    query += ' AND status = ?';
-    params.push(status);
-  }
-  if (search) {
-    query += ' AND (plate_number LIKE ? OR model LIKE ? OR brand LIKE ?)';
-    params.push(`%${search}%`, `%${search}%`, `%${search}%`);
-  }
+    if (status && status !== 'hammasi') {
+      q = query(q, where('status', '==', status));
+    }
 
-  const cars = db.prepare(query).all(...params);
-  res.json(cars);
+    const snapshot = await getDocs(q);
+    let cars = snapshot.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+
+    if (search) {
+      const s = (search as string).toLowerCase();
+      cars = cars.filter((car: any) => 
+        car.plate_number.toLowerCase().includes(s) || 
+        car.model.toLowerCase().includes(s) || 
+        car.brand.toLowerCase().includes(s)
+      );
+    }
+
+    res.json(cars);
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
 });
 
-app.post('/api/cars', authenticateToken, isAdmin, upload.single('image'), (req, res) => {
+app.post('/api/cars', authenticateToken, isAdmin, upload.single('image'), async (req, res) => {
   const { plate_number, brand, model, year, color, daily_price, status, notes } = req.body;
   const image_url = req.file ? `/uploads/${req.file.filename}` : null;
 
   try {
-    const result = db.prepare(`
-      INSERT INTO cars (plate_number, brand, model, year, color, daily_price, status, image_url, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(plate_number, brand, model, year, color, daily_price, status || 'bor', image_url, notes);
-    res.json({ id: result.lastInsertRowid });
+    const docRef = await addDoc(collection(firestore, 'cars'), {
+      plate_number,
+      brand,
+      model,
+      year: Number(year),
+      color,
+      daily_price: Number(daily_price),
+      status: status || 'bor',
+      image_url,
+      notes: notes || ''
+    });
+    res.json({ id: docRef.id });
   } catch (e: any) {
     res.status(400).json({ message: 'Xatolik: ' + e.message });
   }
 });
 
-app.put('/api/cars/:id', authenticateToken, isAdmin, upload.single('image'), (req, res) => {
+app.put('/api/cars/:id', authenticateToken, isAdmin, upload.single('image'), async (req, res) => {
   const { plate_number, brand, model, year, color, daily_price, status, notes } = req.body;
   const carId = req.params.id;
   
-  let query = 'UPDATE cars SET plate_number=?, brand=?, model=?, year=?, color=?, daily_price=?, status=?, notes=?';
-  const params = [plate_number, brand, model, year, color, daily_price, status, notes];
+  try {
+    const updateData: any = {
+      plate_number,
+      brand,
+      model,
+      year: Number(year),
+      color,
+      daily_price: Number(daily_price),
+      status,
+      notes
+    };
 
-  if (req.file) {
-    query += ', image_url=?';
-    params.push(`/uploads/${req.file.filename}`);
+    if (req.file) {
+      updateData.image_url = `/uploads/${req.file.filename}`;
+    }
+
+    await updateDoc(doc(firestore, 'cars', carId), updateData);
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
   }
-
-  query += ' WHERE id=?';
-  params.push(carId);
-
-  db.prepare(query).run(...params);
-  res.json({ success: true });
 });
 
-app.delete('/api/cars/:id', authenticateToken, isAdmin, (req, res) => {
-  db.prepare('DELETE FROM cars WHERE id = ?').run(req.params.id);
-  res.json({ success: true });
+app.delete('/api/cars/:id', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    await deleteDoc(doc(firestore, 'cars', req.params.id));
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
 });
 
 // Clients
-app.get('/api/clients', authenticateToken, (req, res) => {
+app.get('/api/clients', authenticateToken, async (req, res) => {
   const { search } = req.query;
-  let query = `
-    SELECT c.*, (SELECT COUNT(*) FROM rentals WHERE client_id = c.id) as rental_count 
-    FROM clients c 
-    WHERE 1=1
-  `;
-  const params: any[] = [];
+  try {
+    const snapshot = await getDocs(collection(firestore, 'clients'));
+    let clients = snapshot.docs.map((d: any) => ({ id: d.id, ...d.data() }));
 
-  if (search) {
-    query += ' AND (first_name LIKE ? OR last_name LIKE ? OR phone LIKE ?)';
-    params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+    if (search) {
+      const s = (search as string).toLowerCase();
+      clients = clients.filter((c: any) => 
+        c.first_name.toLowerCase().includes(s) || 
+        c.last_name.toLowerCase().includes(s) || 
+        c.phone.toLowerCase().includes(s)
+      );
+    }
+
+    // Add rental count
+    for (const client of clients) {
+      const rentalsSnap = await getDocs(query(collection(firestore, 'rentals'), where('client_id', '==', client.id)));
+      client.rental_count = rentalsSnap.size;
+    }
+
+    res.json(clients);
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
   }
-
-  const clients = db.prepare(query).all(...params);
-  res.json(clients);
 });
 
-app.post('/api/clients', authenticateToken, (req, res) => {
+app.post('/api/clients', authenticateToken, async (req, res) => {
   const { first_name, last_name, phone, passport_series, passport_number, address } = req.body;
   try {
-    const result = db.prepare(`
-      INSERT INTO clients (first_name, last_name, phone, passport_series, passport_number, address)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(first_name, last_name, phone, passport_series, passport_number, address);
-    res.json({ id: result.lastInsertRowid });
+    const docRef = await addDoc(collection(firestore, 'clients'), {
+      first_name,
+      last_name,
+      phone,
+      passport_series,
+      passport_number,
+      address,
+      created_at: new Date().toISOString()
+    });
+    res.json({ id: docRef.id });
   } catch (e: any) {
     res.status(400).json({ message: 'Xatolik: ' + e.message });
   }
 });
 
 // Rentals
-app.get('/api/rentals', authenticateToken, (req, res) => {
+app.get('/api/rentals', authenticateToken, async (req, res) => {
   const { status, start_date, end_date, manager_id } = req.query;
-  let query = `
-    SELECT r.*, c.plate_number, c.brand, c.model, cl.first_name, cl.last_name, u.full_name as manager_name
-    FROM rentals r
-    JOIN cars c ON r.car_id = c.id
-    JOIN clients cl ON r.client_id = cl.id
-    JOIN users u ON r.manager_id = u.id
-    WHERE 1=1
-  `;
-  const params: any[] = [];
+  try {
+    let q: any = collection(firestore, 'rentals');
 
-  if (status && status !== 'hammasi') {
-    query += ' AND r.status = ?';
-    params.push(status);
-  }
-  if (start_date) {
-    query += ' AND r.start_date >= ?';
-    params.push(start_date);
-  }
-  if (end_date) {
-    query += ' AND r.end_date <= ?';
-    params.push(end_date);
-  }
-  if (manager_id) {
-    query += ' AND r.manager_id = ?';
-    params.push(manager_id);
-  }
+    if (status && status !== 'hammasi') {
+      q = query(q, where('status', '==', status));
+    }
+    if (manager_id) {
+      q = query(q, where('manager_id', '==', manager_id));
+    }
 
-  const rentals = db.prepare(query).all(...params);
-  res.json(rentals);
+    const snapshot = await getDocs(q);
+    let rentals = snapshot.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+
+    if (start_date) {
+      rentals = rentals.filter((r: any) => r.start_date >= start_date);
+    }
+    if (end_date) {
+      rentals = rentals.filter((r: any) => r.start_date <= end_date);
+    }
+
+    const enrichedRentals = [];
+    for (const rental of rentals) {
+      let carData: any = {};
+      let clientData: any = {};
+      let managerData: any = {};
+
+      try {
+        if (rental.car_id) {
+          const carDoc = await getDoc(doc(firestore, 'cars', String(rental.car_id)));
+          carData = carDoc.data() || {};
+        }
+        if (rental.client_id) {
+          const clientDoc = await getDoc(doc(firestore, 'clients', String(rental.client_id)));
+          clientData = clientDoc.data() || {};
+        }
+        if (rental.manager_id) {
+          const managerDoc = await getDoc(doc(firestore, 'users', String(rental.manager_id)));
+          managerData = managerDoc.data() || {};
+        }
+      } catch (e) {
+        console.error(`Error fetching related docs for rental ${rental.id}:`, e);
+      }
+
+      enrichedRentals.push({
+        ...rental,
+        plate_number: carData.plate_number || 'N/A',
+        brand: carData.brand || 'N/A',
+        model: carData.model || 'N/A',
+        first_name: clientData.first_name || 'N/A',
+        last_name: clientData.last_name || 'N/A',
+        manager_name: managerData.full_name || 'N/A'
+      });
+    }
+
+    res.json(enrichedRentals);
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
 });
 
-app.post('/api/rentals', authenticateToken, (req, res) => {
+app.post('/api/rentals', authenticateToken, async (req, res) => {
   const { car_id, client_id, start_date, end_date, daily_price, total_amount, payment_type, deposit_amount, notes } = req.body;
   const manager_id = (req as any).user.id;
 
-  const transaction = db.transaction(() => {
-    // 1. Create rental
-    const result = db.prepare(`
-      INSERT INTO rentals (car_id, client_id, manager_id, start_date, end_date, daily_price, total_amount, payment_type, deposit_amount, notes, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'aktiv')
-    `).run(car_id, client_id, manager_id, start_date, end_date, daily_price, total_amount, payment_type, deposit_amount, notes);
-
-    // 2. Update car status
-    db.prepare("UPDATE cars SET status = 'ijarada' WHERE id = ?").run(car_id);
-
-    return result.lastInsertRowid;
-  });
-
   try {
-    const id = transaction();
-    res.json({ id });
+    const batch = writeBatch(firestore);
+    
+    const rentalRef = doc(collection(firestore, 'rentals'));
+    batch.set(rentalRef, {
+      car_id: String(car_id),
+      client_id: String(client_id),
+      manager_id: String(manager_id),
+      start_date,
+      end_date,
+      daily_price: Number(daily_price),
+      total_amount: Number(total_amount),
+      payment_status: 'tolanmagan',
+      payment_type,
+      deposit_amount: Number(deposit_amount),
+      notes: notes || '',
+      status: 'aktiv'
+    });
+
+    const carRef = doc(firestore, 'cars', String(car_id));
+    batch.update(carRef, { status: 'ijarada' });
+
+    await batch.commit();
+    res.json({ id: rentalRef.id });
   } catch (e: any) {
     res.status(400).json({ message: 'Xatolik: ' + e.message });
   }
 });
 
-app.get('/api/rentals/:id', authenticateToken, (req, res) => {
-  const rental = db.prepare(`
-    SELECT r.*, c.plate_number, c.brand, c.model, cl.first_name, cl.last_name, cl.phone, cl.passport_series, cl.passport_number, cl.address, u.full_name as manager_name
-    FROM rentals r
-    JOIN cars c ON r.car_id = c.id
-    JOIN clients cl ON r.client_id = cl.id
-    JOIN users u ON r.manager_id = u.id
-    WHERE r.id = ?
-  `).get(req.params.id);
+app.get('/api/rentals/:id', authenticateToken, async (req, res) => {
+  try {
+    const rentalDoc = await getDoc(doc(firestore, 'rentals', req.params.id));
+    if (!rentalDoc.exists()) return res.status(404).json({ message: 'Topilmadi' });
 
-  const payments = db.prepare('SELECT * FROM payments WHERE rental_id = ? ORDER BY payment_date DESC').all(req.params.id);
+    const rental = { id: rentalDoc.id, ...rentalDoc.data() } as any;
+    
+    let carData: any = {};
+    let clientData: any = {};
+    let managerData: any = {};
 
-  res.json({ rental, payments });
+    try {
+      if (rental.car_id) {
+        const carDoc = await getDoc(doc(firestore, 'cars', String(rental.car_id)));
+        carData = carDoc.data() || {};
+      }
+      if (rental.client_id) {
+        const clientDoc = await getDoc(doc(firestore, 'clients', String(rental.client_id)));
+        clientData = clientDoc.data() || {};
+      }
+      if (rental.manager_id) {
+        const managerDoc = await getDoc(doc(firestore, 'users', String(rental.manager_id)));
+        managerData = managerDoc.data() || {};
+      }
+    } catch (e) {
+      console.error(`Error fetching related docs for rental ${rental.id}:`, e);
+    }
+
+    const enrichedRental = {
+      ...rental,
+      plate_number: carData.plate_number || 'N/A',
+      brand: carData.brand || 'N/A',
+      model: carData.model || 'N/A',
+      first_name: clientData.first_name || 'N/A',
+      last_name: clientData.last_name || 'N/A',
+      phone: clientData.phone || 'N/A',
+      passport_series: clientData.passport_series || 'N/A',
+      passport_number: clientData.passport_number || 'N/A',
+      address: clientData.address || 'N/A',
+      manager_name: managerData.full_name || 'N/A'
+    };
+
+    const q = query(collection(firestore, 'payments'), where('rental_id', '==', req.params.id));
+    const paymentsSnap = await getDocs(q);
+    const payments = paymentsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    payments.sort((a: any, b: any) => (b.payment_date || '').localeCompare(a.payment_date || ''));
+
+    res.json({ rental: enrichedRental, payments });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
 });
 
-app.post('/api/rentals/:id/return', authenticateToken, (req, res) => {
+app.post('/api/rentals/:id/return', authenticateToken, async (req, res) => {
   const { return_date, total_amount } = req.body;
   const rentalId = req.params.id;
 
-  const rental = db.prepare('SELECT car_id FROM rentals WHERE id = ?').get(rentalId) as any;
+  try {
+    const rentalDoc = await getDoc(doc(firestore, 'rentals', rentalId));
+    if (!rentalDoc.exists()) return res.status(404).json({ message: 'Topilmadi' });
+    const rental = rentalDoc.data() as any;
 
-  const transaction = db.transaction(() => {
-    db.prepare("UPDATE rentals SET status = 'yakunlangan', return_date = ?, total_amount = ? WHERE id = ?")
-      .run(return_date, total_amount, rentalId);
-    db.prepare("UPDATE cars SET status = 'bor' WHERE id = ?").run(rental.car_id);
-  });
+    const batch = writeBatch(firestore);
+    batch.update(doc(firestore, 'rentals', rentalId), {
+      status: 'yakunlangan',
+      return_date,
+      total_amount: Number(total_amount)
+    });
+    batch.update(doc(firestore, 'cars', String(rental.car_id)), { status: 'bor' });
 
-  transaction();
-  res.json({ success: true });
+    await batch.commit();
+    res.json({ success: true });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
 });
 
 // Payments
-app.post('/api/payments', authenticateToken, (req, res) => {
+app.post('/api/payments', authenticateToken, async (req, res) => {
   const { rental_id, amount, payment_type, notes } = req.body;
   
-  const transaction = db.transaction(() => {
-    db.prepare('INSERT INTO payments (rental_id, amount, payment_type, notes) VALUES (?, ?, ?, ?)').run(rental_id, amount, payment_type, notes);
+  try {
+    const paymentRef = await addDoc(collection(firestore, 'payments'), {
+      rental_id: String(rental_id),
+      amount: Number(amount),
+      payment_type,
+      notes: notes || '',
+      payment_date: new Date().toISOString()
+    });
     
     // Update rental payment status
-    const rental = db.prepare('SELECT total_amount FROM rentals WHERE id = ?').get(rental_id) as any;
-    const totalPaid = db.prepare('SELECT SUM(amount) as total FROM payments WHERE rental_id = ?').get(rental_id) as any;
+    const rentalDoc = await getDoc(doc(firestore, 'rentals', String(rental_id)));
+    if (!rentalDoc.exists()) return res.status(404).json({ message: 'Ijara topilmadi' });
+    const rental = rentalDoc.data() as any;
+    
+    const q = query(collection(firestore, 'payments'), where('rental_id', '==', String(rental_id)));
+    const paymentsSnap = await getDocs(q);
+    let totalPaid = 0;
+    paymentsSnap.forEach(d => totalPaid += d.data().amount);
     
     let status = 'qisman';
-    if (totalPaid.total >= rental.total_amount) status = 'tolangan';
-    if (totalPaid.total === 0) status = 'tolanmagan';
+    if (totalPaid >= rental.total_amount) status = 'tolangan';
+    if (totalPaid === 0) status = 'tolanmagan';
 
-    db.prepare('UPDATE rentals SET payment_status = ? WHERE id = ?').run(status, rental_id);
-  });
-
-  transaction();
-  res.json({ success: true });
+    await updateDoc(doc(firestore, 'rentals', String(rental_id)), { payment_status: status });
+    
+    res.json({ success: true, id: paymentRef.id });
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
 });
 
 // Users (Admin only)
-app.get('/api/users', authenticateToken, isAdmin, (req, res) => {
-  const users = db.prepare('SELECT id, username, full_name, role, is_active FROM users').all();
-  res.json(users);
+app.get('/api/users', authenticateToken, isAdmin, async (req, res) => {
+  try {
+    const snapshot = await getDocs(collection(firestore, 'users'));
+    const users = snapshot.docs.map(d => {
+      const data = d.data();
+      return {
+        id: d.id,
+        username: data.username,
+        full_name: data.full_name,
+        role: data.role,
+        is_active: data.is_active
+      };
+    });
+    res.json(users);
+  } catch (error: any) {
+    res.status(500).json({ message: error.message });
+  }
 });
 
 app.post('/api/users', authenticateToken, isAdmin, async (req, res) => {
   const { username, password, full_name, role } = req.body;
-  const hashedPassword = await bcrypt.hash(password, 10);
   try {
-    db.prepare('INSERT INTO users (username, password, full_name, role) VALUES (?, ?, ?, ?)').run(username, hashedPassword, full_name, role);
+    const hashedPassword = await bcrypt.hash(password, 10);
+    await addDoc(collection(firestore, 'users'), {
+      username,
+      password: hashedPassword,
+      full_name,
+      role,
+      is_active: 1
+    });
     res.json({ success: true });
   } catch (e: any) {
     res.status(400).json({ message: 'Xatolik: ' + e.message });
@@ -336,94 +587,110 @@ app.post('/api/users', authenticateToken, isAdmin, async (req, res) => {
 // Reports: Excel Export
 app.get('/api/reports/export/excel', authenticateToken, async (req, res) => {
   const { start_date, end_date } = req.query;
-  const workbook = new ExcelJS.Workbook();
-  const sheet = workbook.addWorksheet('Ijaralar');
+  try {
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Ijaralar');
 
-  sheet.columns = [
-    { header: 'ID', key: 'id', width: 10 },
-    { header: 'Mashina', key: 'car', width: 20 },
-    { header: 'Mijoz', key: 'client', width: 25 },
-    { header: 'Boshlanish', key: 'start', width: 15 },
-    { header: 'Tugash', key: 'end', width: 15 },
-    { header: 'Summa', key: 'amount', width: 15 },
-    { header: 'Holat', key: 'status', width: 15 },
-  ];
+    sheet.columns = [
+      { header: 'ID', key: 'id', width: 15 },
+      { header: 'Mashina', key: 'car', width: 25 },
+      { header: 'Mijoz', key: 'client', width: 25 },
+      { header: 'Boshlanish', key: 'start', width: 15 },
+      { header: 'Tugash', key: 'end', width: 15 },
+      { header: 'Summa', key: 'amount', width: 15 },
+      { header: 'Holat', key: 'status', width: 15 },
+    ];
 
-  const rentals = db.prepare(`
-    SELECT r.*, c.plate_number, c.brand, c.model, cl.first_name, cl.last_name
-    FROM rentals r
-    JOIN cars c ON r.car_id = c.id
-    JOIN clients cl ON r.client_id = cl.id
-    WHERE r.start_date >= ? AND r.start_date <= ?
-  `).all(start_date || '1970-01-01', end_date || '2099-12-31') as any[];
+    const snapshot = await getDocs(collection(firestore, 'rentals'));
+    let rentals = snapshot.docs.map(d => ({ id: d.id, ...d.data() })) as any[];
 
-  rentals.forEach(r => {
-    sheet.addRow({
-      id: r.id,
-      car: `${r.brand} ${r.model} (${r.plate_number})`,
-      client: `${r.first_name} ${r.last_name}`,
-      start: r.start_date,
-      end: r.end_date,
-      amount: r.total_amount,
-      status: r.status
-    });
-  });
+    if (start_date) {
+      rentals = rentals.filter(r => r.start_date >= start_date);
+    }
+    if (end_date) {
+      rentals = rentals.filter(r => r.start_date <= end_date);
+    }
 
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', 'attachment; filename=hisobot.xlsx');
-  await workbook.xlsx.write(res);
-  res.end();
+    for (const r of rentals) {
+      const carDoc = await getDoc(doc(firestore, 'cars', String(r.car_id)));
+      const clientDoc = await getDoc(doc(firestore, 'clients', String(r.client_id)));
+      
+      const carData = carDoc.data() || {};
+      const clientData = clientDoc.data() || {};
+
+      sheet.addRow({
+        id: r.id,
+        car: `${carData.brand || ''} ${carData.model || ''} (${carData.plate_number || ''})`,
+        client: `${clientData.first_name || ''} ${clientData.last_name || ''}`,
+        start: r.start_date,
+        end: r.end_date,
+        amount: r.total_amount,
+        status: r.status
+      });
+    }
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename=hisobot.xlsx');
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (error: any) {
+    res.status(500).send(error.message);
+  }
 });
 
 // Reports: PDF Contract
-app.get('/api/rentals/:id/contract', authenticateToken, (req, res) => {
+app.get('/api/rentals/:id/contract', authenticateToken, async (req, res) => {
   const rentalId = req.params.id;
-  const r = db.prepare(`
-    SELECT r.*, c.plate_number, c.brand, c.model, cl.first_name, cl.last_name, cl.passport_series, cl.passport_number, cl.address
-    FROM rentals r
-    JOIN cars c ON r.car_id = c.id
-    JOIN clients cl ON r.client_id = cl.id
-    WHERE r.id = ?
-  `).get(rentalId) as any;
+  try {
+    const rentalDoc = await getDoc(doc(firestore, 'rentals', rentalId));
+    if (!rentalDoc.exists()) return res.status(404).send('Topilmadi');
+    
+    const r = rentalDoc.data() as any;
+    const carDoc = await getDoc(doc(firestore, 'cars', String(r.car_id)));
+    const clientDoc = await getDoc(doc(firestore, 'clients', String(r.client_id)));
+    
+    const carData = (carDoc.data() || {}) as any;
+    const clientData = (clientDoc.data() || {}) as any;
 
-  if (!r) return res.status(404).send('Topilmadi');
+    const pdfDoc = new PDFDocument();
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename=shartnoma_${rentalId}.pdf`);
+    pdfDoc.pipe(res);
 
-  const doc = new PDFDocument();
-  res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', `attachment; filename=shartnoma_${rentalId}.pdf`);
-  doc.pipe(res);
+    pdfDoc.fontSize(20).text('AVTO-IJARA SHARTNOMASI', { align: 'center' });
+    pdfDoc.moveDown();
+    pdfDoc.fontSize(12).text(`Shartnoma raqami: #${rentalId}`);
+    pdfDoc.text(`Sana: ${new Date().toLocaleDateString('uz-UZ')}`);
+    pdfDoc.moveDown();
 
-  doc.fontSize(20).text('AVTO-IJARA SHARTNOMASI', { align: 'center' });
-  doc.moveDown();
-  doc.fontSize(12).text(`Shartnoma raqami: #${r.id}`);
-  doc.text(`Sana: ${new Date().toLocaleDateString('uz-UZ')}`);
-  doc.moveDown();
+    pdfDoc.fontSize(14).text('1. TOMONLAR', { underline: true });
+    pdfDoc.fontSize(12).text(`Ijaraga beruvchi: AutoRent kompaniyasi`);
+    pdfDoc.text(`Ijaraga oluvchi: ${clientData.first_name} ${clientData.last_name}`);
+    pdfDoc.text(`Passport: ${clientData.passport_series} ${clientData.passport_number}`);
+    pdfDoc.text(`Manzil: ${clientData.address || 'Ko\'rsatilmagan'}`);
+    pdfDoc.moveDown();
 
-  doc.fontSize(14).text('1. TOMONLAR', { underline: true });
-  doc.fontSize(12).text(`Ijaraga beruvchi: AutoRent kompaniyasi`);
-  doc.text(`Ijaraga oluvchi: ${r.first_name} ${r.last_name}`);
-  doc.text(`Passport: ${r.passport_series} ${r.passport_number}`);
-  doc.text(`Manzil: ${r.address || 'Ko\'rsatilmagan'}`);
-  doc.moveDown();
+    pdfDoc.fontSize(14).text('2. AVTOMOBIL MA\'LUMOTLARI', { underline: true });
+    pdfDoc.fontSize(12).text(`Rusumi: ${carData.brand} ${carData.model}`);
+    pdfDoc.text(`Davlat raqami: ${carData.plate_number}`);
+    pdfDoc.moveDown();
 
-  doc.fontSize(14).text('2. AVTOMOBIL MA\'LUMOTLARI', { underline: true });
-  doc.fontSize(12).text(`Rusumi: ${r.brand} ${r.model}`);
-  doc.text(`Davlat raqami: ${r.plate_number}`);
-  doc.moveDown();
+    pdfDoc.fontSize(14).text('3. IJARA SHARTLARI', { underline: true });
+    pdfDoc.fontSize(12).text(`Boshlanish sanasi: ${r.start_date}`);
+    pdfDoc.text(`Tugash sanasi: ${r.end_date}`);
+    pdfDoc.text(`Kunlik narx: ${r.daily_price.toLocaleString()} so\'m`);
+    pdfDoc.text(`Jami summa: ${r.total_amount.toLocaleString()} so\'m`);
+    pdfDoc.text(`Kafolat summasi: ${r.deposit_amount.toLocaleString()} so\'m`);
+    pdfDoc.moveDown();
 
-  doc.fontSize(14).text('3. IJARA SHARTLARI', { underline: true });
-  doc.fontSize(12).text(`Boshlanish sanasi: ${r.start_date}`);
-  doc.text(`Tugash sanasi: ${r.end_date}`);
-  doc.text(`Kunlik narx: ${r.daily_price.toLocaleString()} so\'m`);
-  doc.text(`Jami summa: ${r.total_amount.toLocaleString()} so\'m`);
-  doc.text(`Kafolat summasi: ${r.deposit_amount.toLocaleString()} so\'m`);
-  doc.moveDown();
+    pdfDoc.moveDown(4);
+    pdfDoc.text('__________________________          __________________________');
+    pdfDoc.text('      Kompaniya imzosi                     Mijoz imzosi');
 
-  doc.moveDown(4);
-  doc.text('__________________________          __________________________');
-  doc.text('      Kompaniya imzosi                     Mijoz imzosi');
-
-  doc.end();
+    pdfDoc.end();
+  } catch (error: any) {
+    res.status(500).send(error.message);
+  }
 });
 
 // --- VITE MIDDLEWARE ---

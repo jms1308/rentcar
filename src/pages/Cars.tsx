@@ -26,7 +26,7 @@ export default function Cars() {
     return () => clearTimeout(timer);
   }, [search, statusFilter]);
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (id: string) => {
     if (window.confirm('Haqiqatan ham o\'chirmoqchimisiz?')) {
       await api.delete(`/cars/${id}`);
       fetchCars();

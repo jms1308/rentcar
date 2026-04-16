@@ -7,6 +7,9 @@ export default function Clients() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [showModal, setShowModal] = useState(false);
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [selectedClientHistory, setSelectedClientHistory] = useState<any>(null);
+  const [clientRentals, setClientRentals] = useState([]);
 
   const fetchClients = () => {
     setLoading(true);
@@ -29,6 +32,13 @@ export default function Clients() {
     await api.post('/clients', data);
     setShowModal(false);
     fetchClients();
+  };
+
+  const fetchClientHistory = async (client: any) => {
+    setSelectedClientHistory(client);
+    const res = await api.get(`/rentals?client_id=${client.id}`);
+    setClientRentals(res);
+    setShowHistoryModal(true);
   };
 
   return (
@@ -94,7 +104,11 @@ export default function Clients() {
                     </span>
                   </td>
                   <td className="px-6 py-4 text-right">
-                    <button className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" title="Tarix">
+                    <button 
+                      onClick={() => fetchClientHistory(client)}
+                      className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors" 
+                      title="Tarix"
+                    >
                       <History size={18} />
                     </button>
                   </td>
@@ -104,6 +118,59 @@ export default function Clients() {
           </table>
         </div>
       </div>
+
+      {/* History Modal */}
+      {showHistoryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden">
+            <div className="p-6 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+              <h3 className="text-xl font-bold text-gray-800">
+                {selectedClientHistory?.first_name} {selectedClientHistory?.last_name} - Ijara tarixi
+              </h3>
+              <button onClick={() => setShowHistoryModal(false)} className="text-gray-400 hover:text-gray-600">
+                <X size={24} />
+              </button>
+            </div>
+            <div className="p-6 overflow-y-auto max-h-[70vh]">
+              <table className="w-full text-left">
+                <thead className="bg-gray-50 text-gray-500 text-xs uppercase tracking-wider">
+                  <tr>
+                    <th className="px-4 py-3 font-medium">Mashina</th>
+                    <th className="px-4 py-3 font-medium">Sana</th>
+                    <th className="px-4 py-3 font-medium">Summa</th>
+                    <th className="px-4 py-3 font-medium">Holat</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {clientRentals.length === 0 ? (
+                    <tr><td colSpan={4} className="px-4 py-8 text-center text-gray-500">Tarix topilmadi</td></tr>
+                  ) : clientRentals.map((r: any) => (
+                    <tr key={r.id}>
+                      <td className="px-4 py-4">
+                        <div className="font-medium text-gray-900">{r.brand} {r.model}</div>
+                        <div className="text-xs text-gray-500 font-mono">{r.plate_number}</div>
+                      </td>
+                      <td className="px-4 py-4 text-sm text-gray-600">
+                        {r.start_date} dan {r.end_date} gacha
+                      </td>
+                      <td className="px-4 py-4 text-sm font-bold text-gray-900">
+                        {r.total_amount.toLocaleString()}
+                      </td>
+                      <td className="px-4 py-4">
+                        <span className={`px-2.5 py-1 rounded-full text-xs font-medium capitalize ${
+                          r.status === 'aktiv' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-700'
+                        }`}>
+                          {r.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Client Modal */}
       {showModal && (
